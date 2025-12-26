@@ -9,6 +9,7 @@ import PriceChart from './components/PriceChart'
 import GithubAnalysis from './components/GithubAnalysis'
 import TokenomicsAnalysis from './components/TokenomicsAnalysis'
 import CombinedAnalysis from './components/CombinedAnalysis'
+import ListingAnalysis from './components/ListingAnalysis'
 
 type TokenDetails = Coingecko.Coins.CoinGetIDResponse
 
@@ -246,6 +247,9 @@ export default function TokenDetailPage() {
 
         {/* Price Chart */}
         <PriceChart tokenId={tokenId} />
+
+        {/* Listing Analysis */}
+        <ListingAnalysis tokenId={tokenId} />
 
         {/* GitHub Analysis */}
         {token.links?.repos_url?.github && token.links.repos_url.github[0] && (
