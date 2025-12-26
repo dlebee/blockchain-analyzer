@@ -262,25 +262,41 @@ export async function GET(
     const tokenomicsAnalysis = await tokenomicsResponse.json()
     const tokenData = tokenResponse && tokenResponse.ok ? await tokenResponse.json() : { token: { name: tokenId, symbol: tokenId } }
 
-    // Try to fetch GitHub analysis (optional - will proceed without it if unavailable)
+    // Try to fetch/run GitHub analysis (optional - will proceed without it if unavailable)
+    // The GitHub analysis endpoint will automatically run the analysis if not already cached
     let githubAnalysis: any | null = null
     try {
-      console.log('Attempting to fetch GitHub analysis...')
-      const githubResponse = await fetch(
-        `${baseUrl}/api/tokens/${tokenId}/github-analysis${repoParam ? `?repo=${encodeURIComponent(repoParam)}` : ''}`
-      )
+      console.log('Attempting to fetch/run GitHub analysis (will run automatically if not cached)...')
+      const githubUrl = `${baseUrl}/api/tokens/${tokenId}/github-analysis${repoParam ? `?repo=${encodeURIComponent(repoParam)}` : ''}`
+      
+      // Fetch with a promise that handles long-running analysis
+      const githubResponse = await fetch(githubUrl)
       
       if (githubResponse && githubResponse.ok) {
         githubAnalysis = await githubResponse.json()
-        console.log('GitHub analysis fetched successfully')
+        console.log('GitHub analysis fetched/ran successfully')
       } else {
         const errorData = await githubResponse.json().catch(() => ({}))
-        console.log('GitHub analysis not available:', errorData.error || 'Unknown error')
-        // Continue without GitHub analysis - it's optional
+        const errorMessage = errorData.error || 'Unknown error'
+        console.log('GitHub analysis response indicates:', errorMessage)
+        
+        // Only skip if it's a "no repository" error - otherwise it might be a transient error
+        // If it's a 404 or "No GitHub repository found", proceed without it
+        if (githubResponse.status === 404 || errorMessage.includes('No GitHub repository')) {
+          console.log('No GitHub repository found for this token, proceeding without GitHub analysis')
+          // Continue without GitHub analysis - it's optional
+        } else {
+          // For other errors (like 500), log but still proceed without GitHub analysis
+          console.log('GitHub analysis returned error but proceeding with combined analysis:', errorMessage)
+          // Continue without GitHub analysis - it's optional
+        }
       }
     } catch (error) {
-      console.log('Error fetching GitHub analysis, proceeding without it:', error instanceof Error ? error.message : 'Unknown error')
+      // Handle network errors or timeouts
+      console.log('Error fetching/running GitHub analysis, proceeding without it:', error instanceof Error ? error.message : 'Unknown error')
       // Continue without GitHub analysis - it's optional
+      // Note: The GitHub analysis endpoint will run automatically when called if not cached,
+      // so this error likely means no repo exists or there's a network issue
     }
 
     // Run combined AI analysis
