@@ -41,10 +41,10 @@ async function getTokenDetailsFromCoinGecko(tokenId: string) {
 
 export async function GET(
   request: Request,
-  { params }: { params: Promise<{ id: string }> | { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const resolvedParams = await Promise.resolve(params)
+    const resolvedParams = await params
     const tokenId = resolvedParams.id
 
     if (!tokenId) {

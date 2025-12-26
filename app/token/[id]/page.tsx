@@ -7,6 +7,8 @@ import { FaGlobe, FaGithub, FaLink, FaComments } from 'react-icons/fa'
 import type Coingecko from '@coingecko/coingecko-typescript'
 import PriceChart from './components/PriceChart'
 import GithubAnalysis from './components/GithubAnalysis'
+import TokenomicsAnalysis from './components/TokenomicsAnalysis'
+import CombinedAnalysis from './components/CombinedAnalysis'
 
 type TokenDetails = Coingecko.Coins.CoinGetIDResponse
 
@@ -200,7 +202,7 @@ export default function TokenDetailPage() {
                   <span>Homepage</span>
                 </a>
               )}
-              {token.links.repos_url?.github && token.links.repos_url.github.length > 0 && (
+              {token.links?.repos_url?.github && token.links.repos_url.github.length > 0 && (
                 <>
                   {token.links.repos_url.github.map((githubUrl, index) => (
                     <a
@@ -211,7 +213,7 @@ export default function TokenDetailPage() {
                       className="flex items-center gap-2 text-blue-600 hover:text-blue-800 underline"
                     >
                       <FaGithub className="w-4 h-4" />
-                      <span>{token.links.repos_url.github.length > 1 ? `GitHub ${index + 1}` : 'GitHub'}</span>
+                      <span>{(token.links?.repos_url?.github?.length || 0) > 1 ? `GitHub ${index + 1}` : 'GitHub'}</span>
                     </a>
                   ))}
                 </>
@@ -248,6 +250,14 @@ export default function TokenDetailPage() {
         {/* GitHub Analysis */}
         {token.links?.repos_url?.github && token.links.repos_url.github[0] && (
           <GithubAnalysis tokenId={tokenId} githubUrl={token.links.repos_url.github[0]} />
+        )}
+
+        {/* Tokenomics Analysis */}
+        <TokenomicsAnalysis tokenId={tokenId} />
+
+        {/* Combined Analysis */}
+        {token.links?.repos_url?.github && token.links.repos_url.github[0] && (
+          <CombinedAnalysis tokenId={tokenId} githubUrl={token.links.repos_url.github[0]} />
         )}
 
         {/* Token Data JSON Dump */}

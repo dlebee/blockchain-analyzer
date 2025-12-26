@@ -5,7 +5,7 @@ import Coingecko from '@coingecko/coingecko-typescript'
 import { createClient } from 'redis'
 import { gzipSync, gunzipSync } from 'zlib'
 
-const CACHE_TTL_LONG = 24 * 60 * 60 // 24 hours in seconds (for commits, contributors, repo info)
+const CACHE_TTL_LONG = 15 * 60 // 15 minutes in seconds (for commits, contributors, repo info)
 const CACHE_TTL_ANALYSIS = 15 // 15 seconds (for AI analysis - very short to allow re-querying)
 
 async function getRedisClient() {
@@ -220,7 +220,7 @@ async function getRepositoryInfo(octokit: Octokit, owner: string, repo: string) 
   }
 }
 
-async function analyzeWithOpenAI(commits: any[], repoInfo: any, contributors: any[]) {
+async function analyzeWithOpenAI(commits: { detailed?: any[]; summary?: any[] }, repoInfo: any, contributors: any[]) {
   const openaiApiKey = process.env.OPENAI_API_KEY
   if (!openaiApiKey) {
     throw new Error('OPENAI_API_KEY environment variable is not set')
@@ -297,10 +297,23 @@ Please analyze this project and provide:
    - Security concerns or code smells
    - Consistency in coding style
    - Technical debt indicators
-3. **Project Health Score** (0-100): Based on activity, maintenance, community engagement, AND code quality
-4. **Maintenance Status**: Is the project actively maintained? Any red flags?
-5. **Community Health**: How healthy is the contributor community?
-6. **Overall Assessment**: Summary of project health and recommendations
+3. **Blockchain Framework Detection**: Analyze the codebase to determine:
+   - What blockchain framework is being used (e.g., Substrate, Cosmos SDK/Tendermint, Ethereum/EVM, Solana, Polkadot, Avalanche, Polygon, etc.)
+   - If no common framework is detected, indicate "Custom" or "Unknown"
+   - Provide evidence from code patterns, dependencies, file structures, or commit messages
+4. **EVM Compatibility**: Determine if this blockchain is EVM (Ethereum Virtual Machine) compatible:
+   - Look for EVM-related code, Solidity contracts, EVM opcodes, or Ethereum compatibility layers
+   - Check for references to EVM, Ethereum, or compatibility layers in code
+   - Answer: true/false with confidence level and evidence
+5. **Layer 2 Detection**: Determine if this is a Layer 2 (L2) solution:
+   - Look for L2-specific patterns: rollups (optimistic or zk-rollups), state channels, plasma, sidechains
+   - Check for references to L1 (Layer 1) chains, bridges, sequencers, validators, or settlement layers
+   - Look for mentions of Optimism, Arbitrum, Polygon, Base, zkSync, Scroll, or other L2 technologies
+   - Answer: true/false with confidence level and evidence
+6. **Project Health Score** (0-100): Based on activity, maintenance, community engagement, AND code quality
+7. **Maintenance Status**: Is the project actively maintained? Any red flags?
+8. **Community Health**: How healthy is the contributor community?
+9. **Overall Assessment**: Summary of project health and recommendations
 
 Format your response as JSON with the following structure:
 {
@@ -318,6 +331,18 @@ Format your response as JSON with the following structure:
     "concerns": ["code concern1", "code concern2"],
     "patterns": "description of coding patterns observed"
   },
+  "blockchainInfo": {
+    "framework": "Substrate/Cosmos SDK/EVM/Custom/Unknown/etc",
+    "frameworkConfidence": "high/medium/low",
+    "frameworkEvidence": "evidence from code, dependencies, or structure that supports this determination",
+    "isEVMCompatible": true/false,
+    "evmCompatibilityConfidence": "high/medium/low",
+    "evmCompatibilityEvidence": "evidence from code that indicates EVM compatibility or lack thereof",
+    "isL2": true/false,
+    "l2Confidence": "high/medium/low",
+    "l2Type": "optimistic-rollup/zk-rollup/plasma/sidechain/state-channel/none/unknown",
+    "l2Evidence": "evidence from code that indicates L2 characteristics or lack thereof"
+  },
   "projectHealth": {
     "score": 0-100,
     "analysis": "detailed analysis",
@@ -328,7 +353,7 @@ Format your response as JSON with the following structure:
     }
   },
   "recommendations": ["recommendation1", "recommendation2"],
-  "overallAssessment": "comprehensive summary that includes code quality insights"
+  "overallAssessment": "comprehensive summary that includes code quality insights and blockchain characteristics"
 }`
 
   try {
@@ -338,7 +363,7 @@ Format your response as JSON with the following structure:
         {
           role: 'system',
           content:
-            'You are an expert software engineer and open-source project analyst. You MUST analyze the actual CODE CONTENT from the commit patches/diffs provided. Look at the code changes, patterns, quality, and practices. Provide detailed, accurate assessments in JSON format.',
+            'You are an expert software engineer, open-source project analyst, and blockchain technology specialist. You MUST analyze the actual CODE CONTENT from the commit patches/diffs provided. Look at the code changes, patterns, quality, and practices. Additionally, you MUST analyze the codebase to detect blockchain frameworks (Substrate, Cosmos SDK, EVM, Solana, etc.), EVM compatibility, and Layer 2 characteristics. Examine code patterns, dependencies, file structures, and commit messages for evidence. Provide detailed, accurate assessments in JSON format.',
         },
         {
           role: 'user',
@@ -359,10 +384,10 @@ Format your response as JSON with the following structure:
 
 export async function GET(
   request: Request,
-  { params }: { params: Promise<{ id: string }> | { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const resolvedParams = await Promise.resolve(params)
+    const resolvedParams = await params
     const tokenId = resolvedParams.id
 
     if (!tokenId) {
@@ -378,20 +403,40 @@ export async function GET(
       )
     }
 
-    // Get token details from CoinGecko to find GitHub URL
-    const tokenDetails = await getTokenDetailsFromCoinGecko(tokenId)
-    const githubUrls = tokenDetails.links?.repos_url?.github || []
+    // Check if repo parameter is provided (for organization repo selection)
+    const { searchParams } = new URL(request.url)
+    const repoParam = searchParams.get('repo')
 
-    if (githubUrls.length === 0) {
-      return NextResponse.json(
-        { error: 'No GitHub repository found for this token' },
-        { status: 404 }
-      )
+    let githubUrl: string
+    let repoInfo: { owner: string; repo: string } | null
+
+    if (repoParam) {
+      // Use the provided repo parameter (format: owner/repo)
+      const [owner, repo] = repoParam.split('/')
+      if (!owner || !repo) {
+        return NextResponse.json(
+          { error: 'Invalid repo parameter format. Expected: owner/repo' },
+          { status: 400 }
+        )
+      }
+      githubUrl = `https://github.com/${repoParam}`
+      repoInfo = { owner, repo }
+    } else {
+      // Get token details from CoinGecko to find GitHub URL
+      const tokenDetails = await getTokenDetailsFromCoinGecko(tokenId)
+      const githubUrls = tokenDetails.links?.repos_url?.github || []
+
+      if (githubUrls.length === 0) {
+        return NextResponse.json(
+          { error: 'No GitHub repository found for this token' },
+          { status: 404 }
+        )
+      }
+
+      // Use the first GitHub URL
+      githubUrl = githubUrls[0]
+      repoInfo = parseGitHubUrl(githubUrl)
     }
-
-    // Use the first GitHub URL
-    const githubUrl = githubUrls[0]
-    const repoInfo = parseGitHubUrl(githubUrl)
 
     if (!repoInfo) {
       return NextResponse.json(
@@ -532,10 +577,11 @@ export async function GET(
     if (needsAnalysis) {
       console.log('Cache miss: running OpenAI analysis')
       analysis = await analyzeWithOpenAI(commits, repoData, contributors)
-      // Cache analysis (short term - 10 minutes)
+      // Cache analysis (short term - 15 seconds)
       try {
         await redis.setEx(analysisCacheKey, CACHE_TTL_ANALYSIS, JSON.stringify(analysis))
         console.log(`Cached analysis result (TTL: ${CACHE_TTL_ANALYSIS}s / 15 seconds)`)
+        console.log(`Cached GitHub data (commits, contributors, repo info) with TTL: ${CACHE_TTL_LONG}s / 15 minutes`)
       } catch (error) {
         console.error('Redis set error for analysis:', error)
       }

@@ -38,10 +38,10 @@ async function getMarketChartFromCoinGecko(tokenId: string, vsCurrency: string, 
 
 export async function GET(
   request: Request,
-  { params }: { params: Promise<{ id: string }> | { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const resolvedParams = await Promise.resolve(params)
+    const resolvedParams = await params
     const tokenId = resolvedParams.id
     const { searchParams } = new URL(request.url)
     const days = searchParams.get('days') || '30'

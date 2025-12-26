@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { FaGithub, FaStar, FaCodeBranch, FaExclamationTriangle, FaUsers, FaCheckCircle, FaTimesCircle } from 'react-icons/fa'
 
 interface GithubAnalysisProps {
@@ -22,6 +22,18 @@ interface Analysis {
     strengths: string[]
     concerns: string[]
     patterns: string
+  }
+  blockchainInfo?: {
+    framework: string
+    frameworkConfidence: string
+    frameworkEvidence: string
+    isEVMCompatible: boolean
+    evmCompatibilityConfidence: string
+    evmCompatibilityEvidence: string
+    isL2: boolean
+    l2Confidence: string
+    l2Type: string
+    l2Evidence: string
   }
   projectHealth: {
     score: number
@@ -69,18 +81,105 @@ interface GithubAnalysisData {
   analyzedAt: string
 }
 
+function parseGitHubUrl(url: string): { type: 'org' | 'repo'; org?: string; owner?: string; repo?: string } | null {
+  try {
+    const urlObj = new URL(url.replace('.git', ''))
+    const parts = urlObj.pathname.split('/').filter(Boolean)
+    
+    if (parts.length >= 2) {
+      return {
+        type: 'repo',
+        owner: parts[0],
+        repo: parts[1],
+      }
+    } else if (parts.length === 1) {
+      return {
+        type: 'org',
+        org: parts[0],
+      }
+    }
+    return null
+  } catch (error) {
+    return null
+  }
+}
+
 export default function GithubAnalysis({ tokenId, githubUrl }: GithubAnalysisProps) {
   const [analysis, setAnalysis] = useState<GithubAnalysisData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [repositories, setRepositories] = useState<Array<{ name: string; full_name: string; url: string; description?: string; stars: number }>>([])
+  const [selectedRepo, setSelectedRepo] = useState<string>('')
+  const [loadingRepos, setLoadingRepos] = useState(false)
+
+  useEffect(() => {
+    async function fetchRepositories() {
+      if (!githubUrl) return
+
+      const parsed = parseGitHubUrl(githubUrl)
+      let orgName: string | undefined
+      let initialRepo: string | undefined
+
+      if (parsed?.type === 'org' && parsed.org) {
+        // Organization URL
+        orgName = parsed.org
+      } else if (parsed?.type === 'repo' && parsed.owner && parsed.repo) {
+        // Repository URL - extract org from owner
+        orgName = parsed.owner
+        initialRepo = `${parsed.owner}/${parsed.repo}`
+      }
+
+      if (orgName) {
+        try {
+          setLoadingRepos(true)
+          const response = await fetch(`/api/github/org/${orgName}/repos`)
+          if (response.ok) {
+            const data = await response.json()
+            setRepositories(data.repositories || [])
+            // Pre-select the initial repo if it was a specific repository URL
+            if (initialRepo) {
+              setSelectedRepo(initialRepo)
+            }
+          } else {
+            // Fallback: if org fetch fails, just use the single repo
+            if (initialRepo && parsed?.type === 'repo' && parsed.repo) {
+              setRepositories([{
+                name: parsed.repo,
+                full_name: initialRepo,
+                url: githubUrl,
+                stars: 0,
+              }])
+              setSelectedRepo(initialRepo)
+            }
+          }
+        } catch (err) {
+          console.error('Error fetching repositories:', err)
+          // Fallback: if org fetch fails, just use the single repo
+          if (initialRepo && parsed?.type === 'repo' && parsed.repo) {
+            setRepositories([{
+              name: parsed.repo,
+              full_name: initialRepo,
+              url: githubUrl,
+              stars: 0,
+            }])
+            setSelectedRepo(initialRepo)
+          }
+        } finally {
+          setLoadingRepos(false)
+        }
+      }
+    }
+
+    fetchRepositories()
+  }, [githubUrl])
 
   async function fetchAnalysis() {
-    if (!githubUrl) return
+    if (!githubUrl || !selectedRepo) return
 
     try {
       setLoading(true)
       setError(null)
-      const response = await fetch(`/api/tokens/${tokenId}/github-analysis`)
+      const response = await fetch(`/api/tokens/${tokenId}/github-analysis?repo=${encodeURIComponent(selectedRepo)}`)
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
         throw new Error(errorData.error || 'Failed to fetch GitHub analysis')
@@ -119,9 +218,33 @@ export default function GithubAnalysis({ tokenId, githubUrl }: GithubAnalysisPro
         <p className="text-gray-600 mb-4">
           Analyze the GitHub repository to evaluate commit quality, project health, and community engagement.
         </p>
+        
+        {loadingRepos ? (
+          <div className="text-gray-500 mb-4">Loading repositories...</div>
+        ) : repositories.length > 0 ? (
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Select Repository to Analyze:
+            </label>
+            <select
+              value={selectedRepo}
+              onChange={(e) => setSelectedRepo(e.target.value)}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm"
+            >
+              <option value="">-- Select a repository --</option>
+              {repositories.map((repo) => (
+                <option key={repo.full_name} value={repo.full_name}>
+                  {repo.full_name} {repo.stars > 0 && `⭐ ${repo.stars}`} {repo.description && `- ${repo.description.substring(0, 50)}`}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : null}
+
         <button
           onClick={fetchAnalysis}
-          className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center gap-2"
+          disabled={!selectedRepo}
+          className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <FaGithub className="w-4 h-4" />
           Analyze Repository
@@ -162,9 +285,31 @@ export default function GithubAnalysis({ tokenId, githubUrl }: GithubAnalysisPro
           </a>
         </div>
         <div className="text-red-500 py-4 mb-4">{error}</div>
+        
+        {repositories.length > 0 && (
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Select Repository to Analyze:
+            </label>
+            <select
+              value={selectedRepo}
+              onChange={(e) => setSelectedRepo(e.target.value)}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm"
+            >
+              <option value="">-- Select a repository --</option>
+              {repositories.map((repo) => (
+                <option key={repo.full_name} value={repo.full_name}>
+                  {repo.full_name} {repo.stars > 0 && `⭐ ${repo.stars}`} {repo.description && `- ${repo.description.substring(0, 50)}`}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
         <button
           onClick={fetchAnalysis}
-          className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center gap-2"
+          disabled={!selectedRepo}
+          className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <FaGithub className="w-4 h-4" />
           Retry Analysis
@@ -185,6 +330,10 @@ export default function GithubAnalysis({ tokenId, githubUrl }: GithubAnalysisPro
     return 'bg-red-100'
   }
 
+  // TypeScript guard: analysis is guaranteed to be non-null here
+  if (!analysis) return null
+  const analysisData = analysis
+
   return (
     <div className="bg-white rounded-lg shadow-md p-6 mb-6">
       <div className="flex items-center justify-between mb-6">
@@ -193,7 +342,7 @@ export default function GithubAnalysis({ tokenId, githubUrl }: GithubAnalysisPro
           GitHub Analysis
         </h2>
         <a
-          href={analysis.repository.url}
+          href={analysisData.repository.url}
           target="_blank"
           rel="noopener noreferrer"
           className="text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1"
@@ -208,75 +357,129 @@ export default function GithubAnalysis({ tokenId, githubUrl }: GithubAnalysisPro
           <FaStar className="w-4 h-4 text-yellow-500" />
           <div>
             <p className="text-sm text-gray-500">Stars</p>
-            <p className="text-lg font-semibold">{analysis.repository.info.stars.toLocaleString()}</p>
+            <p className="text-lg font-semibold">{analysisData.repository.info.stars.toLocaleString()}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <FaCodeBranch className="w-4 h-4 text-blue-500" />
           <div>
             <p className="text-sm text-gray-500">Forks</p>
-            <p className="text-lg font-semibold">{analysis.repository.info.forks.toLocaleString()}</p>
+            <p className="text-lg font-semibold">{analysisData.repository.info.forks.toLocaleString()}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <FaExclamationTriangle className="w-4 h-4 text-orange-500" />
           <div>
             <p className="text-sm text-gray-500">Issues</p>
-            <p className="text-lg font-semibold">{analysis.repository.info.open_issues.toLocaleString()}</p>
+            <p className="text-lg font-semibold">{analysisData.repository.info.open_issues.toLocaleString()}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <FaUsers className="w-4 h-4 text-purple-500" />
           <div>
             <p className="text-sm text-gray-500">Contributors</p>
-            <p className="text-lg font-semibold">{analysis.contributors.count}</p>
+            <p className="text-lg font-semibold">{analysisData.contributors.count}</p>
           </div>
         </div>
       </div>
 
       {/* Scores */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-        <div className={`${getScoreBgColor(analysis.analysis.commitQuality.score)} rounded-lg p-4`}>
+        <div className={`${getScoreBgColor(analysisData.analysis.commitQuality.score)} rounded-lg p-4`}>
           <div className="flex items-center justify-between mb-2">
             <h3 className="font-semibold text-gray-900">Commit Quality</h3>
-            <span className={`text-2xl font-bold ${getScoreColor(analysis.analysis.commitQuality.score)}`}>
-              {analysis.analysis.commitQuality.score}/100
+            <span className={`text-2xl font-bold ${getScoreColor(analysisData.analysis.commitQuality.score)}`}>
+              {analysisData.analysis.commitQuality.score}/100
             </span>
           </div>
-          <p className="text-sm text-gray-700">{analysis.analysis.commitQuality.analysis}</p>
+          <p className="text-sm text-gray-700">{analysisData.analysis.commitQuality.analysis}</p>
         </div>
 
-        {analysis.analysis.codeQuality && (
-          <div className={`${getScoreBgColor(analysis.analysis.codeQuality.score)} rounded-lg p-4`}>
+        {analysisData.analysis.codeQuality && (
+          <div className={`${getScoreBgColor(analysisData.analysis.codeQuality.score)} rounded-lg p-4`}>
             <div className="flex items-center justify-between mb-2">
               <h3 className="font-semibold text-gray-900">Code Quality</h3>
-              <span className={`text-2xl font-bold ${getScoreColor(analysis.analysis.codeQuality.score)}`}>
-                {analysis.analysis.codeQuality.score}/100
+              <span className={`text-2xl font-bold ${getScoreColor(analysisData.analysis.codeQuality.score)}`}>
+                {analysisData.analysis.codeQuality.score}/100
               </span>
             </div>
-            <p className="text-sm text-gray-700">{analysis.analysis.codeQuality.analysis}</p>
+            <p className="text-sm text-gray-700">{analysisData.analysis.codeQuality.analysis}</p>
           </div>
         )}
 
-        <div className={`${getScoreBgColor(analysis.analysis.projectHealth.score)} rounded-lg p-4`}>
+        <div className={`${getScoreBgColor(analysisData.analysis.projectHealth.score)} rounded-lg p-4`}>
           <div className="flex items-center justify-between mb-2">
             <h3 className="font-semibold text-gray-900">Project Health</h3>
-            <span className={`text-2xl font-bold ${getScoreColor(analysis.analysis.projectHealth.score)}`}>
-              {analysis.analysis.projectHealth.score}/100
+            <span className={`text-2xl font-bold ${getScoreColor(analysisData.analysis.projectHealth.score)}`}>
+              {analysisData.analysis.projectHealth.score}/100
             </span>
           </div>
-          <p className="text-sm text-gray-700">{analysis.analysis.projectHealth.analysis}</p>
+          <p className="text-sm text-gray-700">{analysisData.analysis.projectHealth.analysis}</p>
         </div>
       </div>
 
+      {/* Blockchain Information */}
+      {analysisData.analysis.blockchainInfo && (
+        <div className="mb-6">
+          <h3 className="font-semibold text-gray-900 mb-3">Blockchain Characteristics</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div className="bg-blue-50 rounded-lg p-4">
+              <h4 className="text-sm font-medium text-blue-900 mb-2">Framework</h4>
+              <p className="text-lg font-semibold text-gray-900">{analysisData.analysis.blockchainInfo.framework}</p>
+              <p className="text-xs text-gray-600 mt-1">
+                Confidence: <span className="capitalize">{analysisData.analysis.blockchainInfo.frameworkConfidence}</span>
+              </p>
+              {analysisData.analysis.blockchainInfo.frameworkEvidence && (
+                <p className="text-xs text-gray-700 mt-2">{analysisData.analysis.blockchainInfo.frameworkEvidence}</p>
+              )}
+            </div>
+            <div className={`rounded-lg p-4 ${analysisData.analysis.blockchainInfo.isEVMCompatible ? 'bg-green-50' : 'bg-gray-50'}`}>
+              <h4 className="text-sm font-medium mb-2">
+                <span className={analysisData.analysis.blockchainInfo.isEVMCompatible ? 'text-green-900' : 'text-gray-900'}>
+                  EVM Compatible
+                </span>
+              </h4>
+              <p className={`text-lg font-semibold ${analysisData.analysis.blockchainInfo.isEVMCompatible ? 'text-green-700' : 'text-gray-700'}`}>
+                {analysisData.analysis.blockchainInfo.isEVMCompatible ? 'Yes' : 'No'}
+              </p>
+              <p className="text-xs text-gray-600 mt-1">
+                Confidence: <span className="capitalize">{analysisData.analysis.blockchainInfo.evmCompatibilityConfidence}</span>
+              </p>
+              {analysisData.analysis.blockchainInfo.evmCompatibilityEvidence && (
+                <p className="text-xs text-gray-700 mt-2">{analysisData.analysis.blockchainInfo.evmCompatibilityEvidence}</p>
+              )}
+            </div>
+          </div>
+          <div className="bg-purple-50 rounded-lg p-4">
+            <h4 className="text-sm font-medium text-purple-900 mb-2">Layer 2 Status</h4>
+            <div className="flex items-center gap-3 mb-2">
+              <p className={`text-lg font-semibold ${analysisData.analysis.blockchainInfo.isL2 ? 'text-purple-700' : 'text-gray-700'}`}>
+                {analysisData.analysis.blockchainInfo.isL2 ? 'Yes' : 'No'}
+              </p>
+              {analysisData.analysis.blockchainInfo.isL2 && analysisData.analysis.blockchainInfo.l2Type !== 'none' && analysisData.analysis.blockchainInfo.l2Type !== 'unknown' && (
+                <span className="px-2 py-1 bg-purple-200 text-purple-800 rounded text-xs font-medium capitalize">
+                  {analysisData.analysis.blockchainInfo.l2Type.replace('-', ' ')}
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-gray-600 mb-2">
+              Confidence: <span className="capitalize">{analysisData.analysis.blockchainInfo.l2Confidence}</span>
+            </p>
+            {analysisData.analysis.blockchainInfo.l2Evidence && (
+              <p className="text-xs text-gray-700">{analysisData.analysis.blockchainInfo.l2Evidence}</p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Code Quality Details */}
-      {analysis.analysis.codeQuality && (
+      {analysisData.analysis.codeQuality && (
         <div className="mb-6">
           <h3 className="font-semibold text-gray-900 mb-3">Code Quality Analysis</h3>
-          {analysis.analysis.codeQuality.patterns && (
+          {analysisData.analysis.codeQuality.patterns && (
             <div className="bg-blue-50 rounded-lg p-4 mb-4">
               <h4 className="text-sm font-medium text-blue-900 mb-2">Coding Patterns</h4>
-              <p className="text-sm text-gray-700">{analysis.analysis.codeQuality.patterns}</p>
+              <p className="text-sm text-gray-700">{analysisData.analysis.codeQuality.patterns}</p>
             </div>
           )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -286,7 +489,7 @@ export default function GithubAnalysis({ tokenId, githubUrl }: GithubAnalysisPro
                 Code Strengths
               </h4>
               <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
-                {analysis.analysis.codeQuality.strengths.map((strength, idx) => (
+                {analysisData.analysis.codeQuality.strengths.map((strength, idx) => (
                   <li key={idx}>{strength}</li>
                 ))}
               </ul>
@@ -297,17 +500,17 @@ export default function GithubAnalysis({ tokenId, githubUrl }: GithubAnalysisPro
                 Code Concerns
               </h4>
               <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
-                {analysis.analysis.codeQuality.concerns.map((concern, idx) => (
+                {analysisData.analysis.codeQuality.concerns.map((concern, idx) => (
                   <li key={idx}>{concern}</li>
                 ))}
               </ul>
             </div>
           </div>
-          {analysis.analysis.codeQuality.observations.length > 0 && (
+          {analysisData.analysis.codeQuality.observations.length > 0 && (
             <div className="mt-4">
               <h4 className="text-sm font-medium text-gray-900 mb-2">Observations</h4>
               <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
-                {analysis.analysis.codeQuality.observations.map((obs, idx) => (
+                {analysisData.analysis.codeQuality.observations.map((obs, idx) => (
                   <li key={idx}>{obs}</li>
                 ))}
               </ul>
@@ -326,7 +529,7 @@ export default function GithubAnalysis({ tokenId, githubUrl }: GithubAnalysisPro
               Strengths
             </h4>
             <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
-              {analysis.analysis.commitQuality.strengths.map((strength, idx) => (
+              {analysisData.analysis.commitQuality.strengths.map((strength, idx) => (
                 <li key={idx}>{strength}</li>
               ))}
             </ul>
@@ -337,7 +540,7 @@ export default function GithubAnalysis({ tokenId, githubUrl }: GithubAnalysisPro
               Weaknesses
             </h4>
             <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
-              {analysis.analysis.commitQuality.weaknesses.map((weakness, idx) => (
+              {analysisData.analysis.commitQuality.weaknesses.map((weakness, idx) => (
                 <li key={idx}>{weakness}</li>
               ))}
             </ul>
@@ -351,25 +554,25 @@ export default function GithubAnalysis({ tokenId, githubUrl }: GithubAnalysisPro
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="bg-gray-50 rounded-lg p-3">
             <p className="text-sm text-gray-500 mb-1">Activity</p>
-            <p className="font-semibold capitalize text-gray-900">{analysis.analysis.projectHealth.indicators.activity}</p>
+            <p className="font-semibold capitalize text-gray-900">{analysisData.analysis.projectHealth.indicators.activity}</p>
           </div>
           <div className="bg-gray-50 rounded-lg p-3">
             <p className="text-sm text-gray-500 mb-1">Maintenance</p>
-            <p className="font-semibold capitalize text-gray-900">{analysis.analysis.projectHealth.indicators.maintenance}</p>
+            <p className="font-semibold capitalize text-gray-900">{analysisData.analysis.projectHealth.indicators.maintenance}</p>
           </div>
           <div className="bg-gray-50 rounded-lg p-3">
             <p className="text-sm text-gray-500 mb-1">Community</p>
-            <p className="font-semibold capitalize text-gray-900">{analysis.analysis.projectHealth.indicators.community}</p>
+            <p className="font-semibold capitalize text-gray-900">{analysisData.analysis.projectHealth.indicators.community}</p>
           </div>
         </div>
       </div>
 
       {/* Top Contributors */}
-      {analysis.contributors.topContributors.length > 0 && (
+      {analysisData.contributors.topContributors.length > 0 && (
         <div className="mb-6">
           <h3 className="font-semibold text-gray-900 mb-3">Top Contributors</h3>
           <div className="flex flex-wrap gap-3">
-            {analysis.contributors.topContributors.slice(0, 5).map((contributor) => (
+            {analysisData.contributors.topContributors.slice(0, 5).map((contributor) => (
               <a
                 key={contributor.login}
                 href={contributor.html_url}
@@ -393,11 +596,11 @@ export default function GithubAnalysis({ tokenId, githubUrl }: GithubAnalysisPro
       )}
 
       {/* Recommendations */}
-      {analysis.analysis.recommendations.length > 0 && (
+      {analysisData.analysis.recommendations.length > 0 && (
         <div className="mb-6">
           <h3 className="font-semibold text-gray-900 mb-3">Recommendations</h3>
           <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
-            {analysis.analysis.recommendations.map((rec, idx) => (
+            {analysisData.analysis.recommendations.map((rec, idx) => (
               <li key={idx}>{rec}</li>
             ))}
           </ul>
@@ -407,12 +610,12 @@ export default function GithubAnalysis({ tokenId, githubUrl }: GithubAnalysisPro
       {/* Overall Assessment */}
       <div className="bg-blue-50 rounded-lg p-4">
         <h3 className="font-semibold text-gray-900 mb-2">Overall Assessment</h3>
-        <p className="text-sm text-gray-700">{analysis.analysis.overallAssessment}</p>
+        <p className="text-sm text-gray-700">{analysisData.analysis.overallAssessment}</p>
       </div>
 
       {/* Analysis Metadata */}
       <div className="mt-4 text-xs text-gray-500">
-        Analyzed {analysis.commits.totalAnalyzed} commits • {new Date(analysis.analyzedAt).toLocaleString()}
+        Analyzed {analysisData.commits.totalAnalyzed} commits • {new Date(analysisData.analyzedAt).toLocaleString()}
       </div>
     </div>
   )
