@@ -88,7 +88,10 @@ interface GithubAnalysisData {
       html_url: string
       activity?: {
         totalCommitsLast3Months: number
-        repoActivity: Array<{ repo: string; commits: number }>
+        repoActivity: Array<{ repo: string; commits: number; org: string }>
+        orgCommits: { [org: string]: number }
+        sameOrgCommits: number
+        gluwaCommits: number
         isActive: boolean
       }
     }>
@@ -702,17 +705,21 @@ export default function GithubAnalysis({ tokenId, githubUrl }: GithubAnalysisPro
                         ) : (
                           <FaTimesCircle className="w-4 h-4 text-red-600" title="Inactive: Less than 10 commits in last 3 months" />
                         )
-                      ) : (
-                        <span className="text-xs text-gray-400">Loading...</span>
-                      )}
+                      ) : null}
                     </div>
                     <p className="text-xs text-gray-500">
                       {contributor.contributions} total contributions
                     </p>
                     {activity && (
-                      <p className="text-xs text-gray-500">
-                        {threeMonthCommits} commits (last 3 months)
-                      </p>
+                      <div className="text-xs text-gray-500 space-y-0.5">
+                        <p>{threeMonthCommits} commits (last 3 months)</p>
+                        {activity.sameOrgCommits > 0 && (
+                          <p className="text-gray-600">Same org: {activity.sameOrgCommits} commits</p>
+                        )}
+                        {activity.gluwaCommits > 0 && (
+                          <p className="text-gray-600">Gluwa: {activity.gluwaCommits} commits</p>
+                        )}
+                      </div>
                     )}
                   </div>
                 </a>

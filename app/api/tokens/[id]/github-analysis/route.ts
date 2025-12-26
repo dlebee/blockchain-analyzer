@@ -71,26 +71,26 @@ async function getContributorActivityAcrossRepos(
   days: number = 90
 ): Promise<{ 
   totalCommitsLast3Months: number
-  repoActivity: Array<{ repo: string; commits: number }>
+  repoActivity: Array<{ repo: string; commits: number; org: string }>
+  orgCommits: { [org: string]: number }
+  sameOrgCommits: number
+  gluwaCommits: number
 }> {
   try {
     const since = new Date()
     since.setDate(since.getDate() - days)
     const sinceISO = since.toISOString()
 
-    // Get user's public repos (up to 30 most recently updated)
-    const { data: userRepos } = await octokit.repos.listForUser({
-      username,
-      per_page: 30,
-      sort: 'updated',
-    })
+    // Extract org name from current repo
+    const currentOrg = currentRepo.owner.toLowerCase()
+    const orgCommits: { [org: string]: number } = {}
 
     // Count total commits across all repos in last 3 months
     let totalCommitsLast3Months = 0
-    const repoActivity: Array<{ repo: string; commits: number }> = []
+    const repoActivity: Array<{ repo: string; commits: number; org: string }> = []
 
-    // Check commits in each repo
-    for (const repo of userRepos) {
+    // Helper function to count commits in a repo
+    const countCommitsInRepo = async (owner: string, repo: string): Promise<number> => {
       try {
         let page = 1
         const perPage = 100
@@ -98,8 +98,8 @@ async function getContributorActivityAcrossRepos(
         
         while (true) {
           const { data: commits } = await octokit.repos.listCommits({
-            owner: repo.owner.login,
-            repo: repo.name,
+            owner,
+            repo,
             author: username,
             since: sinceISO,
             per_page: perPage,
@@ -116,34 +116,91 @@ async function getContributorActivityAcrossRepos(
           await new Promise((resolve) => setTimeout(resolve, 200))
         }
         
+        return repoCommits
+      } catch (error: any) {
+        // Log error but don't fail completely
+        if (error.status !== 404) {
+          console.error(`Error fetching commits for ${username} in ${owner}/${repo}:`, error.message)
+        }
+        return 0
+      }
+    }
+
+    // Always check the current repo first (where they're contributing)
+    const currentRepoCommits = await countCommitsInRepo(currentRepo.owner, currentRepo.repo)
+    if (currentRepoCommits > 0) {
+      const org = currentRepo.owner.toLowerCase()
+      repoActivity.push({
+        repo: `${currentRepo.owner}/${currentRepo.repo}`,
+        commits: currentRepoCommits,
+        org,
+      })
+      totalCommitsLast3Months += currentRepoCommits
+      orgCommits[org] = (orgCommits[org] || 0) + currentRepoCommits
+    }
+
+    // Get user's public repos (up to 50 most recently updated)
+    try {
+      const { data: userRepos } = await octokit.repos.listForUser({
+        username,
+        per_page: 50,
+        sort: 'updated',
+      })
+
+      // Check commits in each repo (excluding current repo if it's already checked)
+      for (const repo of userRepos) {
+        // Skip if this is the current repo (already checked)
+        if (repo.owner.login === currentRepo.owner && repo.name === currentRepo.repo) {
+          continue
+        }
+
+        const repoCommits = await countCommitsInRepo(repo.owner.login, repo.name)
+        
         if (repoCommits > 0) {
+          const org = repo.owner.login.toLowerCase()
           repoActivity.push({
             repo: `${repo.owner.login}/${repo.name}`,
             commits: repoCommits,
+            org,
           })
           totalCommitsLast3Months += repoCommits
+          orgCommits[org] = (orgCommits[org] || 0) + repoCommits
         }
 
         // Small delay between repos to avoid rate limits
         await new Promise((resolve) => setTimeout(resolve, 200))
-      } catch (error) {
-        // Skip repos we can't access
-        continue
       }
+    } catch (error: any) {
+      console.error(`Error fetching repos for ${username}:`, error.message)
+      // Continue even if we can't get user repos
     }
 
     // Sort repos by commit count (most active first)
     repoActivity.sort((a, b) => b.commits - a.commits)
 
+    // Calculate same org commits and gluwa commits
+    const sameOrgCommits = orgCommits[currentOrg] || 0
+    const gluwaCommits = orgCommits['gluwa'] || 0
+
+    console.log(`Activity for ${username}: ${totalCommitsLast3Months} total commits across ${repoActivity.length} repos`)
+    console.log(`  - Same org (${currentOrg}): ${sameOrgCommits} commits`)
+    console.log(`  - Gluwa org: ${gluwaCommits} commits`)
+
     return {
       totalCommitsLast3Months,
       repoActivity,
+      orgCommits,
+      sameOrgCommits,
+      gluwaCommits,
     }
   } catch (error) {
     console.error(`Error fetching activity for ${username}:`, error)
     return { 
       totalCommitsLast3Months: 0,
       repoActivity: [],
+      orgCommits: {},
+      sameOrgCommits: 0,
+      gluwaCommits: 0,
     }
   }
 }
@@ -176,16 +233,19 @@ async function getTopContributors(octokit: Octokit, owner: string, repo: string)
             90 // Last 90 days
           )
 
-          // Determine status based on total commits in last 3 months
-          // Active: Has at least 10 commits in last 3 months (anywhere)
-          // Inactive: Less than 10 commits in last 3 months
-          const isActive = activity.totalCommitsLast3Months >= 10
+          // Determine status based on commits to same org or total commits
+          // Active: Has at least 10 commits to same org OR 10+ total commits in last 3 months
+          // Inactive: Less than 10 commits to same org AND less than 10 total commits
+          const isActive = activity.sameOrgCommits >= 10 || activity.totalCommitsLast3Months >= 10
 
           return {
             ...contributor,
             activity: {
               totalCommitsLast3Months: activity.totalCommitsLast3Months,
               repoActivity: activity.repoActivity, // Which repos they're committing to
+              orgCommits: activity.orgCommits, // Commits per org
+              sameOrgCommits: activity.sameOrgCommits, // Commits to same org as current repo
+              gluwaCommits: activity.gluwaCommits, // Commits to gluwa org
               isActive,
             },
           }
@@ -398,6 +458,8 @@ ${contributors.map((c, i) => {
       : 'none'
     return `${i + 1}. ${c.login} (${c.contributions} total contributions) - ${status}
    - Total commits (last 3 months): ${activity.totalCommitsLast3Months}
+   - Same org commits: ${activity.sameOrgCommits}
+   - Gluwa org commits: ${activity.gluwaCommits}
    - Top repos: ${repoList}`
   }
   return `${i + 1}. ${c.login} (${c.contributions} contributions)`
@@ -644,15 +706,25 @@ export async function GET(
 
     const fetchPromises = []
 
-    if (!contributors) {
-      console.log('Cache miss: fetching contributors')
+    // Always fetch contributors with activity data (even if cached, ensure activity is included)
+    // Check if cached contributors have activity data
+    const hasActivityData = contributors && contributors.length > 0 && contributors[0]?.activity
+    
+    if (!contributors || !hasActivityData) {
+      if (!contributors) {
+        console.log('Cache miss: fetching contributors')
+      } else {
+        console.log('Cache hit but missing activity data: re-fetching contributors with activity')
+      }
       fetchPromises.push(
         getTopContributors(octokit, repoInfo.owner, repoInfo.repo).then((data) => {
           contributors = data
-          // Cache contributors
+          // Cache contributors with activity
           redis.setEx(contributorsCacheKey, CACHE_TTL_LONG, JSON.stringify(data)).catch(console.error)
         })
       )
+    } else {
+      console.log('Cache hit: contributors with activity data')
     }
 
     if (!repoData) {
