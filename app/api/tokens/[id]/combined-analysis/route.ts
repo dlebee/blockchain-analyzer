@@ -22,7 +22,7 @@ async function getRedisClient() {
 }
 
 async function analyzeCombinedWithOpenAI(
-  githubAnalysis: any,
+  githubAnalysis: any | null,
   tokenomicsAnalysis: any,
   tokenData: any
 ) {
@@ -35,13 +35,15 @@ async function analyzeCombinedWithOpenAI(
     apiKey: openaiApiKey,
   })
 
+  const hasGitHubAnalysis = githubAnalysis && githubAnalysis.analysis
+
   const prompt = `You are an expert cryptocurrency analyst, blockchain protocol evaluator, and market sentiment specialist. Analyze the following comprehensive data about a blockchain protocol/token and provide insights on code quality, tokenomics, market dynamics, and most importantly - AUDIENCE SENTIMENT and COMMUNITY FEELING.
 
 Token Information:
 - Name: ${tokenData.token?.name || 'Unknown'}
 - Symbol: ${tokenData.token?.symbol || 'Unknown'}
 
-=== GITHUB CODE ANALYSIS ===
+${hasGitHubAnalysis ? `=== GITHUB CODE ANALYSIS ===
 This represents the SUBSTANCE of the protocol - the actual codebase quality and development health.
 
 Code Quality Score: ${githubAnalysis.analysis?.codeQuality?.score || 'N/A'}/100
@@ -64,7 +66,13 @@ Code Strengths:
 ${githubAnalysis.analysis?.codeQuality?.strengths?.map((s: string) => `- ${s}`).join('\n') || 'None listed'}
 
 Code Concerns:
-${githubAnalysis.analysis?.codeQuality?.concerns?.map((c: string) => `- ${c}`).join('\n') || 'None listed'}
+${githubAnalysis.analysis?.codeQuality?.concerns?.map((c: string) => `- ${c}`).join('\n') || 'None listed'}` : `=== GITHUB CODE ANALYSIS ===
+GitHub analysis is not available for this token. This may be because:
+- No GitHub repository is linked to this token
+- The repository is private or inaccessible
+- GitHub analysis has not been completed yet
+
+You should proceed with the analysis based on tokenomics and market data only, noting that code quality assessment cannot be performed without GitHub data.`}
 
 === TOKENOMICS & MARKET ANALYSIS ===
 This represents the ECONOMIC MODEL and MARKET PERFORMANCE.
@@ -100,24 +108,24 @@ Risk Level: ${tokenomicsAnalysis.analysis?.riskAssessment?.overallRisk || 'Unkno
 === YOUR TASK ===
 Based on this comprehensive data, provide a COMBINED ANALYSIS that:
 
-1. **Protocol Substance Assessment**: Evaluate the actual technical quality and development health of the protocol based on code analysis. Is this a serious, well-built protocol or does it have fundamental issues?
+1. **Protocol Substance Assessment**: ${hasGitHubAnalysis ? 'Evaluate the actual technical quality and development health of the protocol based on code analysis. Is this a serious, well-built protocol or does it have fundamental issues?' : 'NOTE: GitHub analysis is not available. You cannot assess code quality or development health. Focus on what can be determined from tokenomics and market data. Note this limitation in your assessment.'}
 
-2. **Economic Model Evaluation**: Assess how the tokenomics align with the protocol's technical foundation. Are the economics sustainable? Do they support the protocol's goals?
+2. **Economic Model Evaluation**: Assess how the tokenomics align with the protocol's goals. Are the economics sustainable? ${hasGitHubAnalysis ? 'How do they align with the protocol\'s technical foundation?' : 'Without code analysis, focus on the economic model itself.'}
 
-3. **Market Performance Context**: Analyze how market performance relates to both code quality and tokenomics. Is the price action justified by fundamentals?
+3. **Market Performance Context**: Analyze how market performance relates to tokenomics${hasGitHubAnalysis ? ' and code quality' : ''}. Is the price action justified by fundamentals?
 
 4. **AUDIENCE SENTIMENT & COMMUNITY FEELING** (CRITICAL): Based on all the data provided, analyze:
    - What is the general sentiment of the community/audience about this token?
    - Are developers and users excited, skeptical, or indifferent?
-   - What does the GitHub activity (stars, forks, contributors) tell you about community engagement?
+   ${hasGitHubAnalysis ? `- What does the GitHub activity (stars, forks, contributors) tell you about community engagement?` : `- NOTE: GitHub activity data is not available, so you cannot assess developer community engagement from code repositories.`}
    - How does price performance reflect community confidence or lack thereof?
    - What are the key factors driving positive or negative sentiment?
-   - Is there a disconnect between technical quality and market sentiment (e.g., great code but poor price, or vice versa)?
-   - What does the combination of code quality, tokenomics, and market data suggest about how the AUDIENCE FEELS about this project?
+   ${hasGitHubAnalysis ? '- Is there a disconnect between technical quality and market sentiment (e.g., great code but poor price, or vice versa)?' : ''}
+   - What does the combination of${hasGitHubAnalysis ? ' code quality, ' : ''} tokenomics, and market data suggest about how the AUDIENCE FEELS about this project?
 
-5. **Holistic Risk Assessment**: Combine risks from both code and tokenomics perspectives.
+5. **Holistic Risk Assessment**: Combine risks from${hasGitHubAnalysis ? ' both code and ' : ''} tokenomics perspectives. ${hasGitHubAnalysis ? '' : 'Note that technical risks cannot be assessed without GitHub analysis.'}
 
-6. **Investment/Adoption Readiness**: Based on everything, is this protocol ready for serious adoption? What would need to change?
+6. **Investment/Adoption Readiness**: Based on everything, is this protocol ready for serious adoption? What would need to change? ${hasGitHubAnalysis ? '' : 'Note that without code analysis, you cannot fully assess technical readiness.'}
 
 Format your response as JSON with the following structure:
 {
@@ -237,19 +245,11 @@ export async function GET(
     const url = new URL(request.url)
     const baseUrl = `${url.protocol}//${url.host}`
     
-    const [githubResponse, tokenomicsResponse, tokenResponse] = await Promise.all([
-      fetch(`${baseUrl}/api/tokens/${tokenId}/github-analysis${repoParam ? `?repo=${encodeURIComponent(repoParam)}` : ''}`).catch(() => null),
+    // Fetch tokenomics analysis (required) and token data
+    const [tokenomicsResponse, tokenResponse] = await Promise.all([
       fetch(`${baseUrl}/api/tokens/${tokenId}/tokenomics-analysis`).catch(() => null),
       fetch(`${baseUrl}/api/tokens/${tokenId}`).catch(() => null),
     ])
-
-    if (!githubResponse || !githubResponse.ok) {
-      await redis.quit()
-      return NextResponse.json(
-        { error: 'GitHub analysis not available. Please run GitHub analysis first.' },
-        { status: 400 }
-      )
-    }
 
     if (!tokenomicsResponse || !tokenomicsResponse.ok) {
       await redis.quit()
@@ -259,9 +259,29 @@ export async function GET(
       )
     }
 
-    const githubAnalysis = await githubResponse.json()
     const tokenomicsAnalysis = await tokenomicsResponse.json()
     const tokenData = tokenResponse && tokenResponse.ok ? await tokenResponse.json() : { token: { name: tokenId, symbol: tokenId } }
+
+    // Try to fetch GitHub analysis (optional - will proceed without it if unavailable)
+    let githubAnalysis: any | null = null
+    try {
+      console.log('Attempting to fetch GitHub analysis...')
+      const githubResponse = await fetch(
+        `${baseUrl}/api/tokens/${tokenId}/github-analysis${repoParam ? `?repo=${encodeURIComponent(repoParam)}` : ''}`
+      )
+      
+      if (githubResponse && githubResponse.ok) {
+        githubAnalysis = await githubResponse.json()
+        console.log('GitHub analysis fetched successfully')
+      } else {
+        const errorData = await githubResponse.json().catch(() => ({}))
+        console.log('GitHub analysis not available:', errorData.error || 'Unknown error')
+        // Continue without GitHub analysis - it's optional
+      }
+    } catch (error) {
+      console.log('Error fetching GitHub analysis, proceeding without it:', error instanceof Error ? error.message : 'Unknown error')
+      // Continue without GitHub analysis - it's optional
+    }
 
     // Run combined AI analysis
     console.log('Running combined analysis with OpenAI')
@@ -278,11 +298,11 @@ export async function GET(
         name: tokenomicsAnalysis.token?.name || tokenData.name,
         symbol: tokenomicsAnalysis.token?.symbol || tokenData.symbol,
       },
-      githubAnalysis: {
+      githubAnalysis: githubAnalysis ? {
         codeQuality: githubAnalysis.analysis?.codeQuality?.score || null,
         projectHealth: githubAnalysis.analysis?.projectHealth?.score || null,
         blockchainInfo: githubAnalysis.analysis?.blockchainInfo || null,
-      },
+      } : null,
       tokenomicsAnalysis: {
         priceScore: tokenomicsAnalysis.analysis?.priceAnalysis?.score || null,
         tokenomicsScore: tokenomicsAnalysis.analysis?.tokenomics?.score || null,

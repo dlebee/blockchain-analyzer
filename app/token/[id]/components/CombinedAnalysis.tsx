@@ -19,7 +19,7 @@ interface CombinedAnalysisData {
     codeQuality: number | null
     projectHealth: number | null
     blockchainInfo: any
-  }
+  } | null
   tokenomicsAnalysis: {
     priceScore: number | null
     tokenomicsScore: number | null
@@ -161,7 +161,7 @@ export default function CombinedAnalysis({ tokenId, githubUrl }: CombinedAnalysi
         </p>
         {githubUrl && (
           <div className="mb-4 text-sm text-gray-500">
-            Note: This requires both GitHub analysis and tokenomics analysis to be completed first.
+            Note: GitHub analysis will be automatically included if available. If no GitHub repository is linked, the analysis will proceed with tokenomics and market data only.
           </div>
         )}
         <button
@@ -229,7 +229,7 @@ export default function CombinedAnalysis({ tokenId, githubUrl }: CombinedAnalysi
             <p className="text-xs text-gray-600">Code Quality</p>
           </div>
           <p className="text-lg font-semibold text-gray-900">
-            {analysis.githubAnalysis.codeQuality !== null ? `${analysis.githubAnalysis.codeQuality}/100` : 'N/A'}
+            {analysis.githubAnalysis?.codeQuality !== null && analysis.githubAnalysis?.codeQuality !== undefined ? `${analysis.githubAnalysis.codeQuality}/100` : 'N/A'}
           </p>
         </div>
         <div className="bg-purple-50 rounded-lg p-4">
