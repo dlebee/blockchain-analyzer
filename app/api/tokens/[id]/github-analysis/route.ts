@@ -64,6 +64,90 @@ function parseGitHubUrl(githubUrl: string): { owner: string; repo: string } | nu
   }
 }
 
+async function getContributorActivityAcrossRepos(
+  octokit: Octokit,
+  username: string,
+  currentRepo: { owner: string; repo: string },
+  days: number = 90
+): Promise<{ 
+  totalCommitsLast3Months: number
+  repoActivity: Array<{ repo: string; commits: number }>
+}> {
+  try {
+    const since = new Date()
+    since.setDate(since.getDate() - days)
+    const sinceISO = since.toISOString()
+
+    // Get user's public repos (up to 30 most recently updated)
+    const { data: userRepos } = await octokit.repos.listForUser({
+      username,
+      per_page: 30,
+      sort: 'updated',
+    })
+
+    // Count total commits across all repos in last 3 months
+    let totalCommitsLast3Months = 0
+    const repoActivity: Array<{ repo: string; commits: number }> = []
+
+    // Check commits in each repo
+    for (const repo of userRepos) {
+      try {
+        let page = 1
+        const perPage = 100
+        let repoCommits = 0
+        
+        while (true) {
+          const { data: commits } = await octokit.repos.listCommits({
+            owner: repo.owner.login,
+            repo: repo.name,
+            author: username,
+            since: sinceISO,
+            per_page: perPage,
+            page,
+          })
+          
+          if (commits.length === 0) break
+          repoCommits += commits.length
+          
+          if (commits.length < perPage) break // Last page
+          page++
+          
+          // Small delay to avoid rate limits
+          await new Promise((resolve) => setTimeout(resolve, 200))
+        }
+        
+        if (repoCommits > 0) {
+          repoActivity.push({
+            repo: `${repo.owner.login}/${repo.name}`,
+            commits: repoCommits,
+          })
+          totalCommitsLast3Months += repoCommits
+        }
+
+        // Small delay between repos to avoid rate limits
+        await new Promise((resolve) => setTimeout(resolve, 200))
+      } catch (error) {
+        // Skip repos we can't access
+        continue
+      }
+    }
+
+    // Sort repos by commit count (most active first)
+    repoActivity.sort((a, b) => b.commits - a.commits)
+
+    return {
+      totalCommitsLast3Months,
+      repoActivity,
+    }
+  } catch (error) {
+    console.error(`Error fetching activity for ${username}:`, error)
+    return { 
+      totalCommitsLast3Months: 0,
+      repoActivity: [],
+    }
+  }
+}
+
 async function getTopContributors(octokit: Octokit, owner: string, repo: string) {
   try {
     // Get contributors (GitHub API returns top contributors by default)
@@ -72,12 +156,43 @@ async function getTopContributors(octokit: Octokit, owner: string, repo: string)
       repo,
       per_page: 10, // Top 10 contributors
     })
-    return contributors.map((contributor) => ({
+
+    const contributorsList = contributors.slice(0, 5).map((contributor) => ({
       login: contributor.login,
       contributions: contributor.contributions,
       avatar_url: contributor.avatar_url,
       html_url: contributor.html_url,
     }))
+
+    // Check activity for top 5 contributors
+    const contributorsWithActivity = await Promise.all(
+      contributorsList
+        .filter((contributor) => contributor.login) // Filter out contributors without login
+        .map(async (contributor) => {
+          const activity = await getContributorActivityAcrossRepos(
+            octokit,
+            contributor.login!,
+            { owner, repo },
+            90 // Last 90 days
+          )
+
+          // Determine status based on total commits in last 3 months
+          // Active: Has at least 10 commits in last 3 months (anywhere)
+          // Inactive: Less than 10 commits in last 3 months
+          const isActive = activity.totalCommitsLast3Months >= 10
+
+          return {
+            ...contributor,
+            activity: {
+              totalCommitsLast3Months: activity.totalCommitsLast3Months,
+              repoActivity: activity.repoActivity, // Which repos they're committing to
+              isActive,
+            },
+          }
+      })
+    )
+
+    return contributorsWithActivity
   } catch (error) {
     console.error('Error fetching contributors:', error)
     return []
@@ -274,7 +389,19 @@ Repository Information:
 - Archived: ${repoInfo?.archived ? 'Yes' : 'No'}
 
 Top Contributors (${contributors.length}):
-${contributors.map((c, i) => `${i + 1}. ${c.login} (${c.contributions} contributions)`).join('\n')}
+${contributors.map((c, i) => {
+  const activity = (c as any).activity
+  if (activity) {
+    const status = activity.isActive ? '✅ ACTIVE' : '❌ INACTIVE'
+    const repoList = activity.repoActivity && activity.repoActivity.length > 0
+      ? activity.repoActivity.slice(0, 5).map((r: any) => `${r.repo} (${r.commits} commits)`).join(', ')
+      : 'none'
+    return `${i + 1}. ${c.login} (${c.contributions} total contributions) - ${status}
+   - Total commits (last 3 months): ${activity.totalCommitsLast3Months}
+   - Top repos: ${repoList}`
+  }
+  return `${i + 1}. ${c.login} (${c.contributions} contributions)`
+}).join('\n')}
 
 Last ${allCommits.length} Commits Analysis:
 
@@ -287,8 +414,14 @@ ${commitAnalysisData}
 Note: The detailed analysis includes actual code changes (patches/diffs) from up to 3 files per commit, showing additions, deletions, and modifications. This allows you to evaluate code quality, coding patterns, and development practices.
 
 Please analyze this project and provide:
-1. **Commit Quality Assessment**: Evaluate the quality of commit messages (clarity, descriptiveness, adherence to best practices)
-2. **Code Quality Analysis**: CRITICALLY IMPORTANT - Analyze the actual CODE CONTENT from the commit patches/diffs provided above. Evaluate:
+1. **Contributor Retention Analysis**: Based on the contributor activity data above, assess:
+   - Are top contributors still actively contributing to this repository?
+   - Are any contributors showing signs of moving away (more commits elsewhere than in this repo)?
+   - What does this indicate about project health and contributor retention?
+   - Are there concerns about key contributors leaving?
+   - Provide a retention score (0-100) and detailed analysis
+2. **Commit Quality Assessment**: Evaluate the quality of commit messages (clarity, descriptiveness, adherence to best practices)
+3. **Code Quality Analysis**: CRITICALLY IMPORTANT - Analyze the actual CODE CONTENT from the commit patches/diffs provided above. Evaluate:
    - Code quality and best practices
    - Code patterns and architecture
    - Bug fixes vs features
@@ -297,23 +430,23 @@ Please analyze this project and provide:
    - Security concerns or code smells
    - Consistency in coding style
    - Technical debt indicators
-3. **Blockchain Framework Detection**: Analyze the codebase to determine:
+4. **Blockchain Framework Detection**: Analyze the codebase to determine:
    - What blockchain framework is being used (e.g., Substrate, Cosmos SDK/Tendermint, Ethereum/EVM, Solana, Polkadot, Avalanche, Polygon, etc.)
    - If no common framework is detected, indicate "Custom" or "Unknown"
    - Provide evidence from code patterns, dependencies, file structures, or commit messages
-4. **EVM Compatibility**: Determine if this blockchain is EVM (Ethereum Virtual Machine) compatible:
+5. **EVM Compatibility**: Determine if this blockchain is EVM (Ethereum Virtual Machine) compatible:
    - Look for EVM-related code, Solidity contracts, EVM opcodes, or Ethereum compatibility layers
    - Check for references to EVM, Ethereum, or compatibility layers in code
    - Answer: true/false with confidence level and evidence
-5. **Layer 2 Detection**: Determine if this is a Layer 2 (L2) solution:
+6. **Layer 2 Detection**: Determine if this is a Layer 2 (L2) solution:
    - Look for L2-specific patterns: rollups (optimistic or zk-rollups), state channels, plasma, sidechains
    - Check for references to L1 (Layer 1) chains, bridges, sequencers, validators, or settlement layers
    - Look for mentions of Optimism, Arbitrum, Polygon, Base, zkSync, Scroll, or other L2 technologies
    - Answer: true/false with confidence level and evidence
-6. **Project Health Score** (0-100): Based on activity, maintenance, community engagement, AND code quality
-7. **Maintenance Status**: Is the project actively maintained? Any red flags?
-8. **Community Health**: How healthy is the contributor community?
-9. **Overall Assessment**: Summary of project health and recommendations
+7. **Project Health Score** (0-100): Based on activity, maintenance, community engagement, contributor retention, AND code quality
+8. **Maintenance Status**: Is the project actively maintained? Any red flags?
+9. **Community Health**: How healthy is the contributor community? Are key contributors staying or leaving?
+10. **Overall Assessment**: Summary of project health and recommendations
 
 Format your response as JSON with the following structure:
 {

@@ -23,6 +23,19 @@ interface Analysis {
     concerns: string[]
     patterns: string
   }
+  contributorRetention?: {
+    score: number
+    analysis: string
+    topContributorsStatus: Array<{
+      login: string
+      status: string
+      currentRepoCommits: number
+      otherReposCommits: number
+      assessment: string
+    }>
+    concerns: string[]
+    strengths: string[]
+  }
   blockchainInfo?: {
     framework: string
     frameworkConfidence: string
@@ -42,6 +55,7 @@ interface Analysis {
       activity: string
       maintenance: string
       community: string
+      contributorRetention?: string
     }
   }
   recommendations: string[]
@@ -72,6 +86,11 @@ interface GithubAnalysisData {
       contributions: number
       avatar_url: string
       html_url: string
+      activity?: {
+        totalCommitsLast3Months: number
+        repoActivity: Array<{ repo: string; commits: number }>
+        isActive: boolean
+      }
     }>
   }
   commits: {
@@ -567,30 +586,138 @@ export default function GithubAnalysis({ tokenId, githubUrl }: GithubAnalysisPro
         </div>
       </div>
 
+      {/* Contributor Retention Analysis */}
+      {analysisData.analysis.contributorRetention && (
+        <div className="mb-6">
+          <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+            <FaUsers className="w-5 h-5" />
+            Contributor Retention Analysis
+          </h3>
+          <div className={`${getScoreBgColor(analysisData.analysis.contributorRetention.score)} rounded-lg p-4 mb-4`}>
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="font-semibold text-gray-900">Retention Score</h4>
+              <span className={`text-2xl font-bold ${getScoreColor(analysisData.analysis.contributorRetention.score)}`}>
+                {analysisData.analysis.contributorRetention.score}/100
+              </span>
+            </div>
+            <p className="text-sm text-gray-700 mb-3">{analysisData.analysis.contributorRetention.analysis}</p>
+            
+            {analysisData.analysis.contributorRetention.topContributorsStatus.length > 0 && (
+              <div className="mt-4 space-y-3">
+                <h5 className="text-sm font-medium text-gray-900 mb-2">Top Contributors Status (90 days)</h5>
+                {analysisData.analysis.contributorRetention.topContributorsStatus.map((contributor, idx) => (
+                  <div
+                    key={idx}
+                    className={`p-3 rounded-lg ${
+                      contributor.status === 'moving_away'
+                        ? 'bg-yellow-50 border border-yellow-200'
+                        : contributor.status === 'active'
+                        ? 'bg-green-50 border border-green-200'
+                        : 'bg-gray-50 border border-gray-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-medium text-gray-900">{contributor.login}</span>
+                      <span
+                        className={`text-xs font-medium px-2 py-1 rounded ${
+                          contributor.status === 'moving_away'
+                            ? 'bg-yellow-200 text-yellow-800'
+                            : contributor.status === 'active'
+                            ? 'bg-green-200 text-green-800'
+                            : 'bg-gray-200 text-gray-800'
+                        }`}
+                      >
+                        {contributor.status === 'moving_away' ? '⚠️ Moving Away' : contributor.status === 'active' ? '✅ Active' : '⏸️ Inactive'}
+                      </span>
+                    </div>
+                    <div className="text-xs text-gray-600 mt-1">
+                      Current repo: {contributor.currentRepoCommits} commits • Other repos: {contributor.otherReposCommits} commits
+                    </div>
+                    <p className="text-xs text-gray-700 mt-1">{contributor.assessment}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {analysisData.analysis.contributorRetention.strengths.length > 0 && (
+              <div className="mt-4">
+                <h5 className="text-sm font-medium text-green-700 mb-2 flex items-center gap-1">
+                  <FaCheckCircle className="w-4 h-4" />
+                  Strengths
+                </h5>
+                <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
+                  {analysisData.analysis.contributorRetention.strengths.map((strength, idx) => (
+                    <li key={idx}>{strength}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {analysisData.analysis.contributorRetention.concerns.length > 0 && (
+              <div className="mt-4">
+                <h5 className="text-sm font-medium text-red-700 mb-2 flex items-center gap-1">
+                  <FaExclamationTriangle className="w-4 h-4" />
+                  Concerns
+                </h5>
+                <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
+                  {analysisData.analysis.contributorRetention.concerns.map((concern, idx) => (
+                    <li key={idx}>{concern}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Top Contributors */}
       {analysisData.contributors.topContributors.length > 0 && (
         <div className="mb-6">
           <h3 className="font-semibold text-gray-900 mb-3">Top Contributors</h3>
           <div className="flex flex-wrap gap-3">
-            {analysisData.contributors.topContributors.slice(0, 5).map((contributor) => (
-              <a
-                key={contributor.login}
-                href={contributor.html_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 bg-gray-50 rounded-lg p-2 hover:bg-gray-100 transition-colors"
-              >
-                <img
-                  src={contributor.avatar_url}
-                  alt={contributor.login}
-                  className="w-8 h-8 rounded-full"
-                />
-                <div>
-                  <p className="text-sm font-medium text-gray-900">{contributor.login}</p>
-                  <p className="text-xs text-gray-500">{contributor.contributions} contributions</p>
-                </div>
-              </a>
-            ))}
+            {analysisData.contributors.topContributors.slice(0, 5).map((contributor) => {
+              const activity = (contributor as any).activity
+              const isActive = activity?.isActive === true
+              const threeMonthCommits = activity ? activity.totalCommitsLast3Months : 0
+              
+              return (
+                <a
+                  key={contributor.login}
+                  href={contributor.html_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 rounded-lg p-2 bg-gray-50 hover:bg-gray-100 transition-colors"
+                >
+                  <img
+                    src={contributor.avatar_url}
+                    alt={contributor.login}
+                    className="w-8 h-8 rounded-full"
+                  />
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium text-gray-900">{contributor.login}</p>
+                      {activity ? (
+                        isActive ? (
+                          <FaCheckCircle className="w-4 h-4 text-green-600" title="Active: 10+ commits in last 3 months" />
+                        ) : (
+                          <FaTimesCircle className="w-4 h-4 text-red-600" title="Inactive: Less than 10 commits in last 3 months" />
+                        )
+                      ) : (
+                        <span className="text-xs text-gray-400">Loading...</span>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      {contributor.contributions} total contributions
+                    </p>
+                    {activity && (
+                      <p className="text-xs text-gray-500">
+                        {threeMonthCommits} commits (last 3 months)
+                      </p>
+                    )}
+                  </div>
+                </a>
+              )
+            })}
           </div>
         </div>
       )}
