@@ -18,6 +18,17 @@ interface ListingAnalysisData {
     cexCount: number
     dexCount: number
     totalVolume: number
+    cexVolume?: number
+    dexVolume?: number
+    cexVolumePercentage?: number
+    dexVolumePercentage?: number
+    cexListingPercentage?: number
+    dexListingPercentage?: number
+    concentration?: {
+      type: 'dex' | 'cex' | 'balanced'
+      score: number
+      description: string
+    }
   }
   analysis: {
     listingQuality: {
@@ -223,6 +234,9 @@ export default function ListingAnalysis({ tokenId }: ListingAnalysisProps) {
           </div>
           <p className="text-lg font-semibold text-gray-900">
             {analysis.listingData.cexCount}
+            {analysis.listingData.cexListingPercentage !== undefined && (
+              <span className="text-xs text-gray-500 ml-1">({analysis.listingData.cexListingPercentage.toFixed(1)}%)</span>
+            )}
           </p>
         </div>
         <div className="bg-green-50 rounded-lg p-4">
@@ -232,6 +246,9 @@ export default function ListingAnalysis({ tokenId }: ListingAnalysisProps) {
           </div>
           <p className="text-lg font-semibold text-gray-900">
             {analysis.listingData.dexCount}
+            {analysis.listingData.dexListingPercentage !== undefined && (
+              <span className="text-xs text-gray-500 ml-1">({analysis.listingData.dexListingPercentage.toFixed(1)}%)</span>
+            )}
           </p>
         </div>
         <div className="bg-orange-50 rounded-lg p-4">
@@ -244,6 +261,66 @@ export default function ListingAnalysis({ tokenId }: ListingAnalysisProps) {
           </p>
         </div>
       </div>
+
+      {/* Concentration Badge */}
+      {analysis.listingData.concentration && (
+        <div className={`mb-6 rounded-lg p-4 ${
+          analysis.listingData.concentration.type === 'dex' 
+            ? 'bg-green-50 border-2 border-green-200' 
+            : analysis.listingData.concentration.type === 'cex'
+            ? 'bg-purple-50 border-2 border-purple-200'
+            : 'bg-gray-50 border-2 border-gray-200'
+        }`}>
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-semibold text-gray-900 mb-1 flex items-center gap-2">
+                <FaInfoCircle className={`w-5 h-5 ${
+                  analysis.listingData.concentration.type === 'dex' 
+                    ? 'text-green-600' 
+                    : analysis.listingData.concentration.type === 'cex'
+                    ? 'text-purple-600'
+                    : 'text-gray-600'
+                }`} />
+                Exchange Concentration: <span className="uppercase">{analysis.listingData.concentration.type}</span>
+              </h3>
+              <p className="text-sm text-gray-700">{analysis.listingData.concentration.description}</p>
+            </div>
+            <div className={`text-2xl font-bold ${
+              analysis.listingData.concentration.type === 'dex' 
+                ? 'text-green-600' 
+                : analysis.listingData.concentration.type === 'cex'
+                ? 'text-purple-600'
+                : 'text-gray-600'
+            }`}>
+              {analysis.listingData.concentration.score.toFixed(1)}%
+            </div>
+          </div>
+          {analysis.listingData.cexVolumePercentage !== undefined && analysis.listingData.dexVolumePercentage !== undefined && (
+            <div className="mt-3 grid grid-cols-2 gap-4">
+              <div>
+                <p className="text-xs text-gray-600 mb-1">CEX Volume</p>
+                <div className="w-full bg-gray-200 rounded-full h-2">
+                  <div 
+                    className="bg-purple-600 h-2 rounded-full" 
+                    style={{ width: `${analysis.listingData.cexVolumePercentage}%` }}
+                  ></div>
+                </div>
+                <p className="text-xs text-gray-700 mt-1">{analysis.listingData.cexVolumePercentage.toFixed(1)}%</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-600 mb-1">DEX Volume</p>
+                <div className="w-full bg-gray-200 rounded-full h-2">
+                  <div 
+                    className="bg-green-600 h-2 rounded-full" 
+                    style={{ width: `${analysis.listingData.dexVolumePercentage}%` }}
+                  ></div>
+                </div>
+                <p className="text-xs text-gray-700 mt-1">{analysis.listingData.dexVolumePercentage.toFixed(1)}%</p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Main Scores */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">

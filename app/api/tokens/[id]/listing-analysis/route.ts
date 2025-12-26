@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import Coingecko from '@coingecko/coingecko-typescript'
 import OpenAI from 'openai'
 import { createClient } from 'redis'
+import { getExchangeTypeMap, classifyExchange, DEX_KEYWORDS, knownCEX } from '../../../exchanges/utils'
 
 const CACHE_TTL_ANALYSIS = 15 * 60 // 15 minutes in seconds (for AI analysis)
 const CACHE_TTL_DATA = 60 * 60 // 1 hour in seconds (for ticker data)
@@ -31,17 +32,91 @@ async function getTickersFromCoinGecko(tokenId: string) {
     },
   })
   
-  // Fetch tickers with exchange logos and sorted by trust score
+  // Fetch tickers - don't filter by trust score order so we get DEX exchanges too
+  // DEX exchanges often don't have trust scores
   const response = await client.coins.tickers.get(tokenId, {
     include_exchange_logo: true,
-    order: 'trust_score_desc',
+    order: 'volume_desc', // Order by volume instead to get all exchanges
     depth: false,
   })
+
+  // Log sample of what we got
+  if (response.tickers && response.tickers.length > 0) {
+    console.log(`Fetched ${response.tickers.length} tickers for ${tokenId}`)
+    console.log(`Sample tickers (first 10):`)
+    response.tickers.slice(0, 10).forEach((ticker: any, idx: number) => {
+      console.log(`  ${idx + 1}. ${ticker.market?.name || 'Unknown'} (id: ${ticker.market?.identifier || 'N/A'}, trust: ${ticker.trust_score || 'none'}, volume: $${(ticker.converted_volume?.usd || 0).toLocaleString()})`)
+    })
+  }
   
   return response
 }
 
-async function analyzeListingsWithOpenAI(tickersData: any, tokenData: any) {
+// Map CoinGecko platform IDs to onchain network IDs
+const PLATFORM_TO_NETWORK_MAP: Record<string, string> = {
+  'ethereum': 'eth',
+  'binance-smart-chain': 'bsc',
+  'polygon-pos': 'polygon',
+  'avalanche': 'avax',
+  'fantom': 'fantom',
+  'arbitrum-one': 'arbitrum',
+  'optimistic-ethereum': 'optimism',
+  'base': 'base',
+  'solana': 'solana',
+  'cardano': 'cardano',
+  'polkadot': 'polkadot',
+  'cosmos': 'cosmos',
+  'cronos': 'cronos',
+  'gnosis': 'gnosis',
+  'celo': 'celo',
+  'moonbeam': 'moonbeam',
+  'moonriver': 'moonriver',
+  'metis-andromeda': 'metis',
+  'boba': 'boba',
+  'aurora': 'aurora',
+  'evmos': 'evmos',
+  'kava': 'kava',
+  'zksync': 'zksync',
+  'linea': 'linea',
+  'scroll': 'scroll',
+  'mantle': 'mantle',
+  'blast': 'blast',
+}
+
+// Wrapper function that uses shared getExchangeTypeMap
+async function getExchangeTypeMapForToken(
+  redis: ReturnType<typeof createClient>, 
+  exchangeIdentifiers: string[],
+  tokenPlatformId?: string
+): Promise<Map<string, boolean>> {
+  // Use shared function from utils
+  return await getExchangeTypeMap(exchangeIdentifiers)
+}
+
+// Function to check if an exchange is a DEX using exchange map (preferred) or name matching (fallback)
+function isDEX(ticker: any, exchangeMap?: Map<string, boolean>): boolean {
+  if (!ticker || !ticker.market) {
+    return false
+  }
+  
+  const exchangeName = (ticker.market.name || '').toLowerCase().trim()
+  const exchangeIdentifier = (ticker.market.identifier || '').toLowerCase().trim()
+  
+  // First, try to use the exchange map if available (most accurate)
+  if (exchangeMap && exchangeIdentifier) {
+    const isCentralized = exchangeMap.get(exchangeIdentifier)
+    if (isCentralized !== undefined) {
+      return !isCentralized // centralized=false means DEX
+    }
+  }
+  
+  // Fallback to name matching if exchange map doesn't have this exchange
+  // Use shared classification function
+  const isCentralized = classifyExchange(exchangeIdentifier, exchangeName)
+  return !isCentralized // Return true if DEX (not centralized)
+}
+
+async function analyzeListingsWithOpenAI(tickersData: any, tokenData: any, exchangeMap?: Map<string, boolean>) {
   const openaiApiKey = process.env.OPENAI_API_KEY
   if (!openaiApiKey) {
     throw new Error('OPENAI_API_KEY environment variable is not set')
@@ -53,19 +128,41 @@ async function analyzeListingsWithOpenAI(tickersData: any, tokenData: any) {
 
   const tickers = tickersData.tickers || []
   
-  // Analyze ticker data
+  // Log ALL exchanges first to see what we're working with
+  console.log(`\n=== DEBUGGING DEX DETECTION ===`)
+  console.log(`Total tickers received: ${tickers.length}`)
+  console.log(`First 20 exchanges:`)
+  tickers.slice(0, 20).forEach((t: any, idx: number) => {
+    const name = t.market?.name || 'Unknown'
+    const identifier = t.market?.identifier || 'N/A'
+    const trustScore = t.trust_score || 'none'
+    const isDexResult = isDEX(t, exchangeMap)
+    const mapValue = exchangeMap?.get(identifier)
+    const source = mapValue !== undefined ? 'map' : 'name-matching'
+    console.log(`  ${idx + 1}. ${name} | id: ${identifier} | trust: ${trustScore} | DEX: ${isDexResult} (${source})`)
+  })
+  
+  // Analyze ticker data using exchange map
   const totalTickers = tickers.length
-  const cexTickers = tickers.filter((t: any) => {
-    const exchangeName = t.market?.name?.toLowerCase() || ''
-    // Common DEX indicators
-    const dexIndicators = ['uniswap', 'pancakeswap', 'sushiswap', 'curve', 'balancer', '1inch', 'dodo', 'kyberswap', 'raydium', 'orca', 'serum']
-    return !dexIndicators.some(indicator => exchangeName.includes(indicator))
-  })
-  const dexTickers = tickers.filter((t: any) => {
-    const exchangeName = t.market?.name?.toLowerCase() || ''
-    const dexIndicators = ['uniswap', 'pancakeswap', 'sushiswap', 'curve', 'balancer', '1inch', 'dodo', 'kyberswap', 'raydium', 'orca', 'serum']
-    return dexIndicators.some(indicator => exchangeName.includes(indicator))
-  })
+  const dexTickers = tickers.filter((t: any) => isDEX(t, exchangeMap))
+  const cexTickers = tickers.filter((t: any) => !isDEX(t, exchangeMap))
+  
+  // Log results
+  console.log(`\n=== DETECTION RESULTS ===`)
+  console.log(`Total tickers: ${totalTickers}, DEX: ${dexTickers.length}, CEX: ${cexTickers.length}`)
+  if (dexTickers.length > 0) {
+    console.log(`DEX exchanges found (${dexTickers.length}):`)
+    dexTickers.slice(0, 20).forEach((t: any, idx: number) => {
+      console.log(`  ${idx + 1}. ${t.market?.name || 'Unknown'} (id: ${t.market?.identifier || 'N/A'}, trust: ${t.trust_score || 'none'})`)
+    })
+  } else {
+    console.log(`WARNING: No DEX exchanges detected!`)
+    console.log(`All exchanges (first 30):`)
+    tickers.slice(0, 30).forEach((t: any, idx: number) => {
+      console.log(`  ${idx + 1}. ${t.market?.name || 'Unknown'} (id: ${t.market?.identifier || 'N/A'}, trust: ${t.trust_score || 'none'})`)
+    })
+  }
+  console.log(`=== END DEBUGGING ===\n`)
 
   // Calculate volume distribution
   const totalVolume = tickers.reduce((sum: number, t: any) => sum + (t.converted_volume?.usd || 0), 0)
@@ -326,7 +423,18 @@ export async function GET(
       )
     }
 
-    // Get token basic info for context
+    // Extract unique exchange identifiers from tickers
+    const exchangeIdentifiers = Array.from(
+      new Set(
+        tickersData.tickers
+          .map((t: any) => t.market?.identifier)
+          .filter((id: any) => id && typeof id === 'string')
+      )
+    ) as string[]
+
+    console.log(`Found ${exchangeIdentifiers.length} unique exchanges`)
+
+    // Get token basic info and platform ID for context
     const coingeckoClient = new Coingecko({
       environment: 'demo',
       defaultHeaders: {
@@ -335,6 +443,7 @@ export async function GET(
     })
     
     let tokenData: any = { name: tokenId, symbol: tokenId }
+    let tokenPlatformId: string | undefined
     try {
       const tokenDetails = await coingeckoClient.coins.getID(tokenId, {
         community_data: false,
@@ -348,13 +457,65 @@ export async function GET(
         name: tokenDetails.name,
         symbol: tokenDetails.symbol,
       }
+      // Get platform ID - prefer asset_platform_id, fallback to first platform key
+      tokenPlatformId = tokenDetails.asset_platform_id || 
+                       (tokenDetails.platforms && Object.keys(tokenDetails.platforms)[0]) ||
+                       undefined
+      if (tokenPlatformId) {
+        console.log(`Token ${tokenId} is on platform: ${tokenPlatformId}`)
+      }
     } catch (error) {
       console.log('Could not fetch token details, using defaults')
     }
 
-    // Run AI analysis
+    // Build exchange type map (CEX vs DEX) using shared utilities
+    const exchangeMap = await getExchangeTypeMapForToken(redis, exchangeIdentifiers, tokenPlatformId)
+    console.log(`Exchange map built: ${exchangeMap.size} exchanges (${Array.from(exchangeMap.values()).filter(v => !v).length} DEX, ${Array.from(exchangeMap.values()).filter(v => v).length} CEX)`)
+
+    // Run AI analysis with exchange map
     console.log('Running listing analysis with OpenAI')
-    const analysis = await analyzeListingsWithOpenAI(tickersData, tokenData)
+    const analysis = await analyzeListingsWithOpenAI(tickersData, tokenData, exchangeMap)
+
+    // Calculate DEX/CEX counts for response (using exchange map)
+    const tickers = tickersData.tickers || []
+    const dexTickers = tickers.filter((t: any) => isDEX(t, exchangeMap))
+    const cexTickers = tickers.filter((t: any) => !isDEX(t, exchangeMap))
+    
+    // Calculate volumes
+    const totalVolume = tickers.reduce((sum: number, t: any) => sum + (t.converted_volume?.usd || 0), 0) || 0
+    const cexVolume = cexTickers.reduce((sum: number, t: any) => sum + (t.converted_volume?.usd || 0), 0) || 0
+    const dexVolume = dexTickers.reduce((sum: number, t: any) => sum + (t.converted_volume?.usd || 0), 0) || 0
+    
+    // Calculate concentration metrics
+    const cexVolumePercentage = totalVolume > 0 ? (cexVolume / totalVolume) * 100 : 0
+    const dexVolumePercentage = totalVolume > 0 ? (dexVolume / totalVolume) * 100 : 0
+    const cexListingPercentage = tickers.length > 0 ? (cexTickers.length / tickers.length) * 100 : 0
+    const dexListingPercentage = tickers.length > 0 ? (dexTickers.length / tickers.length) * 100 : 0
+    
+    // Determine concentration type
+    // Consider concentrated if >70% of volume OR >70% of listings
+    let concentrationType: 'dex' | 'cex' | 'balanced' = 'balanced'
+    let concentrationScore = 0
+    
+    if (dexVolumePercentage >= 70 || dexListingPercentage >= 70) {
+      concentrationType = 'dex'
+      concentrationScore = Math.max(dexVolumePercentage, dexListingPercentage)
+    } else if (cexVolumePercentage >= 70 || cexListingPercentage >= 70) {
+      concentrationType = 'cex'
+      concentrationScore = Math.max(cexVolumePercentage, cexListingPercentage)
+    } else {
+      // Balanced - neither exceeds 70%
+      concentrationType = 'balanced'
+      const maxConcentration = Math.max(cexVolumePercentage, dexVolumePercentage, cexListingPercentage, dexListingPercentage)
+      concentrationScore = maxConcentration
+    }
+    
+    // Log for debugging
+    console.log(`Response - Total tickers: ${tickers.length}, DEX: ${dexTickers.length}, CEX: ${cexTickers.length}`)
+    console.log(`Concentration: ${concentrationType.toUpperCase()} (${concentrationScore.toFixed(1)}%) - Volume: CEX ${cexVolumePercentage.toFixed(1)}% / DEX ${dexVolumePercentage.toFixed(1)}%, Listings: CEX ${cexListingPercentage.toFixed(1)}% / DEX ${dexListingPercentage.toFixed(1)}%`)
+    if (dexTickers.length > 0) {
+      console.log(`DEX exchanges in response: ${dexTickers.slice(0, 10).map((t: any) => `${t.market?.name} (${t.market?.identifier})`).join(', ')}`)
+    }
 
     // Prepare response
     const response = {
@@ -364,18 +525,25 @@ export async function GET(
         symbol: tokenData.symbol,
       },
       listingData: {
-        totalListings: tickersData.tickers?.length || 0,
-        cexCount: tickersData.tickers?.filter((t: any) => {
-          const exchangeName = t.market?.name?.toLowerCase() || ''
-          const dexIndicators = ['uniswap', 'pancakeswap', 'sushiswap', 'curve', 'balancer', '1inch', 'dodo', 'kyberswap', 'raydium', 'orca', 'serum']
-          return !dexIndicators.some(indicator => exchangeName.includes(indicator))
-        }).length || 0,
-        dexCount: tickersData.tickers?.filter((t: any) => {
-          const exchangeName = t.market?.name?.toLowerCase() || ''
-          const dexIndicators = ['uniswap', 'pancakeswap', 'sushiswap', 'curve', 'balancer', '1inch', 'dodo', 'kyberswap', 'raydium', 'orca', 'serum']
-          return dexIndicators.some(indicator => exchangeName.includes(indicator))
-        }).length || 0,
-        totalVolume: tickersData.tickers?.reduce((sum: number, t: any) => sum + (t.converted_volume?.usd || 0), 0) || 0,
+        totalListings: tickers.length,
+        cexCount: cexTickers.length,
+        dexCount: dexTickers.length,
+        totalVolume,
+        cexVolume,
+        dexVolume,
+        cexVolumePercentage: parseFloat(cexVolumePercentage.toFixed(2)),
+        dexVolumePercentage: parseFloat(dexVolumePercentage.toFixed(2)),
+        cexListingPercentage: parseFloat(cexListingPercentage.toFixed(2)),
+        dexListingPercentage: parseFloat(dexListingPercentage.toFixed(2)),
+        concentration: {
+          type: concentrationType,
+          score: parseFloat(concentrationScore.toFixed(2)),
+          description: concentrationType === 'dex' 
+            ? `DEX concentrated: ${dexVolumePercentage.toFixed(1)}% of volume and ${dexListingPercentage.toFixed(1)}% of listings are on DEX exchanges`
+            : concentrationType === 'cex'
+            ? `CEX concentrated: ${cexVolumePercentage.toFixed(1)}% of volume and ${cexListingPercentage.toFixed(1)}% of listings are on CEX exchanges`
+            : `Balanced distribution: Mix of CEX (${cexVolumePercentage.toFixed(1)}% volume, ${cexListingPercentage.toFixed(1)}% listings) and DEX (${dexVolumePercentage.toFixed(1)}% volume, ${dexListingPercentage.toFixed(1)}% listings)`
+        },
       },
       analysis,
       analyzedAt: new Date().toISOString(),

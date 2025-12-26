@@ -53,6 +53,16 @@ export default function Navigation() {
             >
               Rankings
             </Link>
+            <Link
+              href="/exchanges"
+              className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                isActive('/exchanges')
+                  ? 'bg-blue-100 text-blue-700'
+                  : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+              }`}
+            >
+              Exchanges
+            </Link>
           </div>
         </div>
       </div>
