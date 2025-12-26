@@ -32,24 +32,59 @@ async function getTickersFromCoinGecko(tokenId: string) {
     },
   })
   
-  // Fetch tickers - don't filter by trust score order so we get DEX exchanges too
-  // DEX exchanges often don't have trust scores
-  const response = await client.coins.tickers.get(tokenId, {
-    include_exchange_logo: true,
-    order: 'volume_desc', // Order by volume instead to get all exchanges
-    depth: false,
-  })
-
+  // Fetch ALL tickers by paginating through all pages
+  // DEX exchanges often don't have trust scores, so we order by volume
+  const allTickers: any[] = []
+  let page = 1
+  let hasMore = true
+  
+  console.log(`Fetching all tickers for ${tokenId} (paginated)...`)
+  
+  while (hasMore) {
+    try {
+      const response = await client.coins.tickers.get(tokenId, {
+        include_exchange_logo: true,
+        order: 'volume_desc', // Order by volume to get all exchanges including DEX
+        depth: false,
+        page: page,
+      })
+      
+      if (response.tickers && response.tickers.length > 0) {
+        allTickers.push(...response.tickers)
+        console.log(`Fetched page ${page}: ${response.tickers.length} tickers (total: ${allTickers.length})`)
+        
+        // If we got fewer than expected, might be last page
+        // CoinGecko typically returns 100 per page, but can vary
+        if (response.tickers.length < 100) {
+          hasMore = false
+        } else {
+          page++
+          // Small delay to avoid rate limits
+          await new Promise(resolve => setTimeout(resolve, 200))
+        }
+      } else {
+        hasMore = false
+      }
+    } catch (error) {
+      console.error(`Error fetching tickers page ${page}:`, error)
+      hasMore = false
+    }
+  }
+  
+  console.log(`Fetched ${allTickers.length} total tickers for ${tokenId}`)
+  
   // Log sample of what we got
-  if (response.tickers && response.tickers.length > 0) {
-    console.log(`Fetched ${response.tickers.length} tickers for ${tokenId}`)
-    console.log(`Sample tickers (first 10):`)
-    response.tickers.slice(0, 10).forEach((ticker: any, idx: number) => {
+  if (allTickers.length > 0) {
+    console.log(`Sample tickers (first 20):`)
+    allTickers.slice(0, 20).forEach((ticker: any, idx: number) => {
       console.log(`  ${idx + 1}. ${ticker.market?.name || 'Unknown'} (id: ${ticker.market?.identifier || 'N/A'}, trust: ${ticker.trust_score || 'none'}, volume: $${(ticker.converted_volume?.usd || 0).toLocaleString()})`)
     })
   }
   
-  return response
+  return {
+    name: tokenId,
+    tickers: allTickers,
+  }
 }
 
 // Map CoinGecko platform IDs to onchain network IDs
@@ -254,7 +289,7 @@ Based on this exchange listing data, provide a comprehensive analysis that inclu
 
 5. **Market Presence & Adoption**: Assess market presence:
    - Does the listing profile suggest broad adoption?
-   - Is this token primarily traded on DEX (suggesting DeFi focus) or CEX (suggesting broader appeal)?
+   - Is this token primarily traded on DEX (suggesting DeFi focus) or CEX (suggesting broader appeal)? (Note: CEX dominance is common and indicates mainstream accessibility)
    - What does the exchange mix tell us about the token's target audience?
 
 6. **Risk Assessment**: Identify potential risks:
@@ -335,7 +370,7 @@ Format your response as JSON with the following structure:
         {
           role: 'system',
           content:
-            'You are an expert cryptocurrency analyst specializing in exchange listings, market accessibility, and liquidity analysis. You excel at evaluating how exchange listings impact token accessibility, liquidity, and market presence. Provide detailed, nuanced assessments that consider both technical metrics and practical implications for traders.',
+            'You are an expert cryptocurrency analyst specializing in exchange listings, market accessibility, and liquidity analysis. You excel at evaluating how exchange listings impact token accessibility, liquidity, and market presence. Provide detailed, nuanced assessments that consider both technical metrics and practical implications for traders.\n\nIMPORTANT CONTEXT:\n- Do NOT mention or discuss low DEX representation percentages. This is not relevant information.\n- Focus on overall listing quality, exchange reputation, and liquidity distribution.\n- High CEX representation is typically a positive indicator of market maturity and accessibility.',
         },
         {
           role: 'user',
@@ -541,7 +576,7 @@ export async function GET(
           description: concentrationType === 'dex' 
             ? `DEX concentrated: ${dexVolumePercentage.toFixed(1)}% of volume and ${dexListingPercentage.toFixed(1)}% of listings are on DEX exchanges`
             : concentrationType === 'cex'
-            ? `CEX concentrated: ${cexVolumePercentage.toFixed(1)}% of volume and ${cexListingPercentage.toFixed(1)}% of listings are on CEX exchanges`
+            ? `CEX concentrated: ${cexVolumePercentage.toFixed(1)}% of volume and ${cexListingPercentage.toFixed(1)}% of listings are on CEX exchanges. This is normal and indicates strong market accessibility.`
             : `Balanced distribution: Mix of CEX (${cexVolumePercentage.toFixed(1)}% volume, ${cexListingPercentage.toFixed(1)}% listings) and DEX (${dexVolumePercentage.toFixed(1)}% volume, ${dexListingPercentage.toFixed(1)}% listings)`
         },
       },
