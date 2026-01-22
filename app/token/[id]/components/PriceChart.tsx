@@ -130,7 +130,7 @@ export default function PriceChart({ tokenId }: PriceChartProps) {
           <YAxis
             yAxisId="fiat"
             orientation="left"
-            tickFormatter={(value) => `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`}
+            tickFormatter={(value) => `$${value.toLocaleString(undefined, { maximumFractionDigits: 8 })}`}
           />
           <Tooltip
             formatter={(value: number, name: string) => {
